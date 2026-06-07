@@ -267,3 +267,76 @@ def test_stats_returns_a_copy():
     assert s2.hits == 2
     # snapshot didn't mutate
     assert s1.hits == 1
+
+
+# ---- set replace / eviction accounting -----------------------------------
+
+
+def test_set_replacing_existing_key_does_not_grow_or_evict():
+    c = ToolCache(max_size=2)
+    c.set("t", {"k": 1}, "a")
+    c.set("t", {"k": 2}, "b")
+    c.set("t", {"k": 1}, "a2")  # replace existing key, not a new entry
+    assert len(c) == 2
+    assert c.evictions == 0
+    assert c.get("t", {"k": 1}) == "a2"
+
+
+def test_set_replacing_promotes_to_most_recent():
+    c = ToolCache(max_size=2)
+    c.set("t", {"k": 1}, "a")
+    c.set("t", {"k": 2}, "b")
+    c.set("t", {"k": 1}, "a2")  # re-set {k:1} → it becomes most-recent
+    c.set("t", {"k": 3}, "c")  # should evict {k:2}, the oldest
+    assert c.get("t", {"k": 2}) is None
+    assert c.get("t", {"k": 1}) == "a2"
+
+
+# ---- get_or_set failure semantics ----------------------------------------
+
+
+def test_get_or_set_does_not_cache_when_compute_raises():
+    c = ToolCache()
+
+    def boom():
+        raise RuntimeError("nope")
+
+    with pytest.raises(RuntimeError):
+        c.get_or_set("t", {"k": 1}, boom)
+    assert len(c) == 0
+    assert c.misses == 1
+    # a later successful compute must run (not return a stale/poisoned value)
+    assert c.get_or_set("t", {"k": 1}, lambda: "ok") == "ok"
+
+
+# ---- expirations stat -----------------------------------------------------
+
+
+def test_expirations_stat_and_snapshot():
+    clock = iter([0.0, 6.0])
+    c = ToolCache(ttl_s=5.0, clock=lambda: next(clock))
+    c.set("t", {"k": 1}, "ok")
+    assert c.get("t", {"k": 1}) is None
+    assert c.expirations == 1
+    assert c.stats.expirations == 1
+
+
+# ---- decorator per-call TTL ----------------------------------------------
+
+
+def test_wrap_respects_ttl_expiry():
+    # clock calls: set-expiry(0.0), get_or_set hit-check(2.0 → expired) then
+    # recompute-expiry(2.0); second call hit-check before expiry not needed.
+    clock = iter([0.0, 2.0, 2.0])
+    c = ToolCache(clock=lambda: next(clock))
+    calls = []
+
+    @c.wrap(ttl_s=1.0)
+    def search(q):
+        calls.append(q)
+        return f"r:{q}"
+
+    assert search("x") == "r:x"  # miss → compute, expiry at 1.0
+    assert search("x") == "r:x"  # clock=2.0 ≥ 1.0 → expired → recompute
+    assert calls == ["x", "x"]
+    assert c.expirations == 1

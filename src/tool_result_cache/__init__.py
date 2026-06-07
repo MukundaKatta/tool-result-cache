@@ -32,7 +32,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Hashable, TypeVar
+from typing import Any, Callable, TypeVar
 
 __version__ = "0.1.0"
 __all__ = [
@@ -218,6 +218,7 @@ class ToolCache:
             tool_name: cache namespace; defaults to the wrapped function's name.
             ttl_s: per-call TTL; defaults to the cache's default.
         """
+
         def decorator(fn: Callable[..., T]) -> Callable[..., T]:
             resolved = tool_name or fn.__name__
 
